@@ -964,6 +964,12 @@ public:
     void SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb);
     void SubmitAsc(u32 vqid, std::span<const u32> acb);
 
+    void SubmitDone() noexcept {
+        std::scoped_lock lk{submit_mutex};
+        submit_done = true;
+        submit_cv.notify_one();
+    }
+
     bool IsGpuIdle() const {
         return num_submits == 0;
     }
@@ -1034,6 +1040,7 @@ private:
     Vulkan::Rasterizer* rasterizer{};
     std::jthread process_thread{};
     std::atomic<u32> num_submits{};
+    std::atomic<bool> submit_done{};
     std::mutex submit_mutex;
     std::condition_variable_any submit_cv;
 };

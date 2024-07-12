@@ -31,7 +31,7 @@ void Liverpool::Process(std::stop_token stoken) {
     while (!stoken.stop_requested()) {
         {
             std::unique_lock lk{submit_mutex};
-            submit_cv.wait(lk, stoken, [this] { return num_submits != 0; });
+            submit_cv.wait(lk, stoken, [this] { return num_submits != 0 || submit_done; });
         }
         if (stoken.stop_requested()) {
             break;
@@ -64,6 +64,13 @@ void Liverpool::Process(std::stop_token stoken) {
 
                 --num_submits;
             }
+        }
+
+        if (submit_done) {
+            if (rasterizer) {
+                rasterizer->Flush();
+            }
+            submit_done = false;
         }
 
         Platform::IrqC::Instance()->Signal(Platform::InterruptId::GpuIdle);
