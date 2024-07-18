@@ -64,9 +64,10 @@ bool CanBlitToSwapchain(const vk::PhysicalDevice physical_device, vk::Format for
 }
 
 RendererVulkan::RendererVulkan(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_)
-    : window{window_}, liverpool{liverpool_}, instance{window, Config::getGpuId(), Config::vkValidationEnabled()},
-      draw_scheduler{instance}, present_scheduler{instance}, flip_scheduler{instance},
-      swapchain{instance, window}, texture_cache{instance, draw_scheduler} {
+    : window{window_}, liverpool{liverpool_},
+      instance{window, Config::getGpuId(), Config::vkValidationEnabled()}, draw_scheduler{instance},
+      present_scheduler{instance}, flip_scheduler{instance}, swapchain{instance, window},
+      texture_cache{instance, draw_scheduler} {
     rasterizer = std::make_unique<Rasterizer>(instance, draw_scheduler, texture_cache, liverpool);
     const u32 num_images = swapchain.GetImageCount();
     const vk::Device device = instance.GetDevice();
@@ -168,8 +169,8 @@ bool RendererVulkan::ShowSplash(Frame* frame /*= nullptr*/) {
                 VideoCore::Extent3D{splash->GetImageInfo().width, splash->GetImageInfo().height, 1};
             info.pitch = splash->GetImageInfo().width;
             info.guest_size_bytes = splash->GetImageData().size();
-            splash_img.emplace(instance, present_scheduler,
-                               info, VAddr(splash->GetImageData().data()));
+            splash_img.emplace(instance, present_scheduler, info,
+                               VAddr(splash->GetImageData().data()));
             texture_cache.RefreshImage(*splash_img);
         }
         frame = PrepareFrameInternal(*splash_img);
@@ -189,8 +190,7 @@ Frame* RendererVulkan::PrepareFrameInternal(VideoCore::Image& image, bool is_eop
     scheduler.EndRendering();
     const auto cmdbuf = scheduler.CommandBuffer();
 
-    image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits::eTransferRead,
-                  cmdbuf);
+    image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits::eTransferRead, cmdbuf);
 
     const std::array pre_barrier{
         vk::ImageMemoryBarrier{
