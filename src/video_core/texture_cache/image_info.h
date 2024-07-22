@@ -45,7 +45,6 @@ struct ImageInfo {
     bool is_cube = false;
     bool is_volume = false;
     bool is_tiled = false;
-    bool is_read_only = false;
     vk::Format pixel_format = vk::Format::eUndefined;
     vk::ImageType type = vk::ImageType::e1D;
     SubresourceExtent resources;

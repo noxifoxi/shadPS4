@@ -119,11 +119,9 @@ Image::Image(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
     ASSERT(info.pixel_format != vk::Format::eUndefined);
     vk::ImageCreateFlags flags{vk::ImageCreateFlagBits::eMutableFormat |
                                vk::ImageCreateFlagBits::eExtendedUsage};
-    if (info.type == vk::ImageType::e2D && info.resources.layers >= 6 &&
-        info.size.width == info.size.height) {
+    if (info.is_cube) {
         flags |= vk::ImageCreateFlagBits::eCubeCompatible;
-    }
-    if (info.type == vk::ImageType::e3D) {
+    } else if (info.is_volume) {
         flags |= vk::ImageCreateFlagBits::e2DArrayCompatible;
     }
     if (info.IsBlockCoded()) {

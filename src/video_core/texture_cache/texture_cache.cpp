@@ -152,8 +152,6 @@ ImageId TextureCache::FindImage(const ImageInfo& info, bool refresh_on_create) {
         image_id = image_ids[0];
     }
 
-    RegisterMeta(info, image_id);
-
     Image& image = slot_images[image_id];
     if (True(image.flags & ImageFlagBits::CpuModified) && refresh_on_create) {
         RefreshImage(image);
@@ -184,13 +182,12 @@ ImageView& TextureCache::RegisterImageView(ImageId image_id, const ImageViewInfo
     return slot_image_views[view_id];
 }
 
-ImageView& TextureCache::FindTexture(const AmdGpu::Image& desc, bool is_storage) {
-    const ImageInfo info{desc};
+ImageView& TextureCache::FindTexture(const ImageInfo& info, const ImageViewInfo& view_info) {
     const ImageId image_id = FindImage(info);
     Image& image = slot_images[image_id];
     auto& usage = image.info.usage;
 
-    if (is_storage) {
+    if (view_info.is_storage) {
         image.Transit(vk::ImageLayout::eGeneral, vk::AccessFlagBits::eShaderWrite);
         usage.storage = true;
     } else {
@@ -201,14 +198,12 @@ ImageView& TextureCache::FindTexture(const AmdGpu::Image& desc, bool is_storage)
         usage.texture = true;
     }
 
-    const ImageViewInfo view_info{desc, is_storage};
     return RegisterImageView(image_id, view_info);
 }
 
-ImageView& TextureCache::FindRenderTarget(const AmdGpu::Liverpool::ColorBuffer& buffer,
-                                          const AmdGpu::Liverpool::CbDbExtent& hint) {
-    const ImageInfo info{buffer, hint};
-    const ImageId image_id = FindImage(info);
+ImageView& TextureCache::FindRenderTarget(const ImageInfo& image_info,
+                                          const ImageViewInfo& view_info) {
+    const ImageId image_id = FindImage(image_info);
     Image& image = slot_images[image_id];
     image.flags &= ~ImageFlagBits::CpuModified;
 
@@ -216,30 +211,56 @@ ImageView& TextureCache::FindRenderTarget(const AmdGpu::Liverpool::ColorBuffer& 
                   vk::AccessFlagBits::eColorAttachmentWrite |
                       vk::AccessFlagBits::eColorAttachmentRead);
 
+    // Register meta data for this color buffer
+    if (!(image.flags & ImageFlagBits::MetaRegistered)) {
+        if (image_info.meta_info.cmask_addr) {
+            surface_metas.emplace(
+                image_info.meta_info.cmask_addr,
+                MetaDataInfo{.type = MetaDataInfo::Type::CMask, .is_cleared = true});
+            image.info.meta_info.cmask_addr = image_info.meta_info.cmask_addr;
+            image.flags |= ImageFlagBits::MetaRegistered;
+        }
+
+        if (image_info.meta_info.fmask_addr) {
+            surface_metas.emplace(
+                image_info.meta_info.fmask_addr,
+                MetaDataInfo{.type = MetaDataInfo::Type::FMask, .is_cleared = true});
+            image.info.meta_info.fmask_addr = image_info.meta_info.fmask_addr;
+            image.flags |= ImageFlagBits::MetaRegistered;
+        }
+    }
+
+    // Update tracked image usage
     image.info.usage.render_target = true;
 
-    ImageViewInfo view_info{buffer, !!image.info.usage.vo_buffer};
     return RegisterImageView(image_id, view_info);
 }
 
-ImageView& TextureCache::FindDepthTarget(const AmdGpu::Liverpool::DepthBuffer& buffer,
-                                         u32 num_slices, VAddr htile_address,
-                                         const AmdGpu::Liverpool::CbDbExtent& hint,
-                                         bool write_enabled) {
-    const ImageInfo info{buffer, num_slices, htile_address, hint};
-    const ImageId image_id = FindImage(info, false);
+ImageView& TextureCache::FindDepthTarget(const ImageInfo& image_info,
+                                         const ImageViewInfo& view_info) {
+    const ImageId image_id = FindImage(image_info, false);
     Image& image = slot_images[image_id];
     image.flags &= ~ImageFlagBits::CpuModified;
 
-    const auto new_layout = write_enabled ? vk::ImageLayout::eDepthStencilAttachmentOptimal
-                                          : vk::ImageLayout::eDepthStencilReadOnlyOptimal;
+    const auto new_layout = view_info.is_storage ? vk::ImageLayout::eDepthStencilAttachmentOptimal
+                                                 : vk::ImageLayout::eDepthStencilReadOnlyOptimal;
     image.Transit(new_layout, vk::AccessFlagBits::eDepthStencilAttachmentWrite |
                                   vk::AccessFlagBits::eDepthStencilAttachmentRead);
 
+    // Register meta data for this depth buffer
+    if (!(image.flags & ImageFlagBits::MetaRegistered)) {
+        if (image_info.meta_info.htile_addr) {
+            surface_metas.emplace(
+                image_info.meta_info.htile_addr,
+                MetaDataInfo{.type = MetaDataInfo::Type::HTile, .is_cleared = true});
+            image.info.meta_info.htile_addr = image_info.meta_info.htile_addr;
+            image.flags |= ImageFlagBits::MetaRegistered;
+        }
+    }
+
+    // Update tracked image usage
     image.info.usage.depth_target = true;
 
-    ImageViewInfo view_info;
-    view_info.format = info.pixel_format;
     return RegisterImageView(image_id, view_info);
 }
 
@@ -320,47 +341,6 @@ void TextureCache::RegisterImage(ImageId image_id) {
     image.flags |= ImageFlagBits::Registered;
     ForEachPage(image.cpu_addr, image.info.guest_size_bytes,
                 [this, image_id](u64 page) { page_table[page].push_back(image_id); });
-}
-
-void TextureCache::RegisterMeta(const ImageInfo& info, ImageId image_id) {
-    Image& image = slot_images[image_id];
-
-    if (image.flags & ImageFlagBits::MetaRegistered) {
-        return;
-    }
-
-    bool registered = true;
-    // Current resource tracking implementation allows us to detect usage of meta only in the last
-    // moment, so we likely will miss its first clear. To avoid this and make first frame, where
-    // the meta is encountered, looks correct we set its state to "cleared" at registrations time.
-    if (info.usage.render_target) {
-        if (info.meta_info.cmask_addr) {
-            surface_metas.emplace(
-                info.meta_info.cmask_addr,
-                MetaDataInfo{.type = MetaDataInfo::Type::CMask, .is_cleared = true});
-            image.info.meta_info.cmask_addr = info.meta_info.cmask_addr;
-        }
-
-        if (info.meta_info.fmask_addr) {
-            surface_metas.emplace(
-                info.meta_info.fmask_addr,
-                MetaDataInfo{.type = MetaDataInfo::Type::FMask, .is_cleared = true});
-            image.info.meta_info.fmask_addr = info.meta_info.fmask_addr;
-        }
-    } else if (info.usage.depth_target) {
-        if (info.meta_info.htile_addr) {
-            surface_metas.emplace(
-                info.meta_info.htile_addr,
-                MetaDataInfo{.type = MetaDataInfo::Type::HTile, .is_cleared = true});
-            image.info.meta_info.htile_addr = info.meta_info.htile_addr;
-        }
-    } else {
-        registered = false;
-    }
-
-    if (registered) {
-        image.flags |= ImageFlagBits::MetaRegistered;
-    }
 }
 
 void TextureCache::UnregisterImage(ImageId image_id) {
